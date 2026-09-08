@@ -37,16 +37,19 @@ def hex_to_bgr(value: str) -> tuple[int, int, int]:
         return (245, 215, 32)
     return tuple(int(value[i : i + 2], 16) for i in (4, 2, 0))
 
-def mask_frame(frame: np.ndarray, confidence: float, opacity: float, color: str) -> tuple[np.ndarray, int, float]:
+def mask_frame(frame: np.ndarray, confidence: float, opacity: float, color: str, output_mode: str = "overlay") -> tuple[np.ndarray, int, float]:
     started = time.perf_counter()
     result = model(frame, classes=[PERSON_CLASS], conf=confidence, verbose=False)[0]
-    output = frame.copy()
+    output = np.zeros_like(frame) if output_mode == "mask" else frame.copy()
     people = 0
     if result.masks is not None:
         mask_color = np.array(hex_to_bgr(color), dtype=np.uint8)
         for mask in result.masks.data.cpu().numpy():
             resized = cv2.resize(mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR) > 0.5
-            output[resized] = (output[resized] * (1 - opacity) + mask_color * opacity).astype(np.uint8)
+            if output_mode == "mask":
+                output[resized] = (255, 255, 255)
+            else:
+                output[resized] = (output[resized] * (1 - opacity) + mask_color * opacity).astype(np.uint8)
             people += 1
     return output, people, (time.perf_counter() - started) * 1000
 
@@ -68,7 +71,7 @@ async def segment_image(file: UploadFile = File(...), confidence: float = Form(0
     return {"result_url": f"/results/{output_name}", "metrics": {"inference_ms": elapsed, "people": people, "fps": 1000 / elapsed if elapsed else 0}}
 
 @app.post("/api/segment/video")
-async def segment_video(file: UploadFile = File(...), confidence: float = Form(0.4), overlay_opacity: float = Form(0.55), overlay_color: str = Form("#20d7f5")):
+async def segment_video(file: UploadFile = File(...), confidence: float = Form(0.4), overlay_opacity: float = Form(0.55), overlay_color: str = Form("#20d7f5"), output_mode: str = Form("overlay")):
     input_path = await save_upload(file)
     capture = cv2.VideoCapture(str(input_path))
     if not capture.isOpened():
@@ -81,7 +84,7 @@ async def segment_video(file: UploadFile = File(...), confidence: float = Form(0
     while True:
         ok, frame = capture.read()
         if not ok: break
-        output, people, elapsed = mask_frame(frame, confidence, overlay_opacity, overlay_color)
+        output, people, elapsed = mask_frame(frame, confidence, overlay_opacity, overlay_color, output_mode)
         writer.write(output); elapsed_total += elapsed; frame_count += 1; max_people = max(max_people, people)
     capture.release(); writer.release()
     if not frame_count:
