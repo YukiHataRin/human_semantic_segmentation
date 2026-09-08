@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.34
+python-multipart>=0.0.20
+ultralytics>=8.3
+opencv-python>=4.10
+# Match the CUDA-enabled torch 2.11 runtime used by this workstation.
+torchvision==0.26.0
