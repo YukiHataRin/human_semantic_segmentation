@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import cv2
@@ -8,8 +7,8 @@ from PySide6.QtCore import Qt, QTimer, QSize, QRect, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog, QFrame,
-    QHBoxLayout, QLabel, QMainWindow, QProgressBar, QPushButton,
-    QScrollArea, QSlider, QStyle, QTabBar, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QMainWindow, QPushButton,
+    QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from .engine import Settings, available_devices
@@ -50,7 +49,7 @@ class Preview(QWidget):
             painter.drawText(self.rect().adjusted(0, -34, 0, -34), Qt.AlignmentFlag.AlignCenter, "See every person.")
             painter.setPen(QColor("#96aab6"))
             painter.setFont(QFont(QApplication.font().family(), 12))
-            painter.drawText(self.rect().adjusted(20, 40, -20, 40), Qt.AlignmentFlag.AlignCenter, "Open an image or video, or start your camera.")
+            painter.drawText(self.rect().adjusted(20, 40, -20, 40), Qt.AlignmentFlag.AlignCenter, "Select a camera and start live tracking.")
 
 
 class MainWindow(QMainWindow):
@@ -64,13 +63,11 @@ class MainWindow(QMainWindow):
         self.camera_discovery = None
         self.last_frame = None
         self.source = None
-        self.result_path = None
         self.color = "#20d7f5"
         self.close_requested = False
         self.setWindowTitle("Human Mask Studio")
         self.resize(1240, 820)
         self.setMinimumSize(960, 640)
-        self.setAcceptDrops(True)
 
         root = QWidget()
         root.setObjectName("root")
@@ -90,13 +87,6 @@ class MainWindow(QMainWindow):
         title_stack.addWidget(subtitle)
         header.addLayout(title_stack)
         header.addStretch()
-        self.tabs = QTabBar()
-        self.tabs.setObjectName("sourceTabs")
-        self.tabs.setDrawBase(False)
-        self.tabs.setExpanding(False)
-        for label in ("Image", "Video", "Camera"):
-            self.tabs.addTab(label)
-        header.addWidget(self.tabs)
         layout.addLayout(header)
 
         workspace = QHBoxLayout()
@@ -106,7 +96,7 @@ class MainWindow(QMainWindow):
         self.preview = Preview()
         canvas.addWidget(self.preview, 1)
         captions = QHBoxLayout()
-        self.filename = QLabel("No media selected")
+        self.filename = QLabel("Camera preview")
         self.filename.setObjectName("caption")
         self.filename.setTextFormat(Qt.TextFormat.PlainText)
         captions.addWidget(self.filename, 1)
@@ -114,11 +104,6 @@ class MainWindow(QMainWindow):
         self.dimensions.setObjectName("caption")
         captions.addWidget(self.dimensions)
         canvas.addLayout(captions)
-        self.progress = QProgressBar()
-        self.progress.setTextVisible(False)
-        self.progress.setMaximumHeight(5)
-        self.progress.hide()
-        canvas.addWidget(self.progress)
         workspace.addLayout(canvas, 1)
 
         inspector = QFrame()
@@ -127,13 +112,8 @@ class MainWindow(QMainWindow):
         controls = QVBoxLayout(inspector)
         controls.setContentsMargins(20, 20, 20, 20)
         controls.setSpacing(9)
-        self.open_button = QPushButton("Open image…")
-        self.open_button.setObjectName("primary")
-        self.open_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
-        self.open_button.clicked.connect(self.choose_source)
-        controls.addWidget(self.open_button)
-
         self.camera_controls = QWidget()
+        self.camera_controls.setObjectName("cameraControls")
         camera_layout = QVBoxLayout(self.camera_controls)
         camera_layout.setContentsMargins(0, 0, 0, 0)
         camera_layout.addWidget(QLabel("Camera"))
@@ -149,7 +129,11 @@ class MainWindow(QMainWindow):
         self.camera_status.setWordWrap(True)
         camera_layout.addWidget(self.camera_status)
         controls.addWidget(self.camera_controls)
-        self.camera_controls.hide()
+        self.start_button = QPushButton("Start camera")
+        self.start_button.setObjectName("primary")
+        self.start_button.setEnabled(False)
+        self.start_button.clicked.connect(self.start_camera)
+        controls.addWidget(self.start_button)
 
         self.device = QComboBox()
         self.device.setAccessibleName("Inference device")
@@ -170,7 +154,6 @@ class MainWindow(QMainWindow):
         self.tracking.setChecked(True)
         self.tracking.toggled.connect(self.settings_changed)
         controls.addWidget(self.tracking)
-        self.tracking.hide()
         self.confidence, self.confidence_value = self.add_slider(controls, "Confidence", 10, 90, 40)
         self.opacity, self.opacity_value = self.add_slider(controls, "Overlay opacity", 10, 90, 55)
         self.output_mode = QComboBox()
@@ -181,10 +164,6 @@ class MainWindow(QMainWindow):
         self.color_button = QPushButton("Mask color · #20D7F5")
         self.color_button.clicked.connect(self.pick_color)
         controls.addWidget(self.color_button)
-        self.apply_button = QPushButton("Apply to image")
-        self.apply_button.clicked.connect(self.apply_image)
-        self.apply_button.setEnabled(False)
-        controls.addWidget(self.apply_button)
         controls.addStretch()
 
         self.metric_labels = {}
@@ -210,34 +189,27 @@ class MainWindow(QMainWindow):
         layout.addLayout(workspace, 1)
 
         footer = QHBoxLayout()
-        self.status_label = QLabel("Ready for media")
+        self.status_label = QLabel("Ready for camera")
         self.status_label.setObjectName("status")
         self.status_label.setTextFormat(Qt.TextFormat.PlainText)
         self.status_label.setWordWrap(True)
         footer.addWidget(self.status_label, 1)
-        self.pause_button = QPushButton("Pause")
-        self.pause_button.clicked.connect(self.toggle_pause)
-        self.pause_button.hide()
-        footer.addWidget(self.pause_button)
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop)
         self.stop_button.setEnabled(False)
         footer.addWidget(self.stop_button)
-        self.save_button = QPushButton("Save result…")
-        self.save_button.clicked.connect(self.save_result)
+        self.save_button = QPushButton("Save snapshot…")
+        self.save_button.clicked.connect(self.save_snapshot)
         self.save_button.setEnabled(False)
         footer.addWidget(self.save_button)
         layout.addLayout(footer)
 
         file_menu = self.menuBar().addMenu("File")
-        open_action = QAction("Open media…", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.choose_file)
-        file_menu.addAction(open_action)
-        save_action = QAction("Save result…", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self.save_result)
-        file_menu.addAction(save_action)
+        self.save_action = QAction("Save snapshot…", self)
+        self.save_action.setShortcut("Ctrl+S")
+        self.save_action.setEnabled(False)
+        self.save_action.triggered.connect(self.save_snapshot)
+        file_menu.addAction(self.save_action)
         file_menu.addSeparator()
         close_action = QAction("Close", self)
         close_action.setShortcut("Ctrl+Q")
@@ -247,7 +219,6 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.refresh_preview)
         self.timer.start()
-        self.tabs.currentChanged.connect(self.mode_changed)
         QTimer.singleShot(0, self.refresh_cameras)
 
     def refresh_cameras(self):
@@ -291,15 +262,14 @@ class MainWindow(QMainWindow):
         ready = idle and self.camera_discovery is None
         self.camera_devices.setEnabled(ready and self.camera_devices.count() > 0)
         self.camera_refresh.setEnabled(ready)
-        self.open_button.setEnabled(idle and (self.tabs.currentIndex() != 2 or (ready and self.camera_devices.count() > 0)))
+        self.start_button.setEnabled(ready and self.camera_devices.count() > 0)
 
     def start_named_camera(self, name=""):
-        self.tabs.setCurrentIndex(2)
         for index in range(self.camera_devices.count()):
             camera = self.camera_devices.itemData(index)
             if not name or name in (camera.name, camera.uid):
                 self.camera_devices.setCurrentIndex(index)
-                self.launch("camera", camera)
+                self.launch(camera)
                 return
         self.on_error(f"Camera not found: {name}" if name else "No cameras detected")
 
@@ -336,13 +306,6 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.update_settings(self.settings())
 
-    def mode_changed(self, index):
-        self.open_button.setText(("Open image…", "Open video…", "Start camera")[index])
-        self.camera_controls.setVisible(index == 2)
-        self.tracking.setVisible(index != 0)
-        self.apply_button.setVisible(index == 0)
-        self.update_camera_controls()
-
     def pick_color(self):
         color = QColorDialog.getColor(QColor(self.color), self, "Mask color")
         if color.isValid():
@@ -350,58 +313,38 @@ class MainWindow(QMainWindow):
             self.color_button.setText(f"Mask color · {self.color.upper()}")
             self.settings_changed()
 
-    def choose_source(self):
-        if self.tabs.currentIndex() == 2:
-            camera = self.camera_devices.currentData()
-            if camera is not None:
-                self.launch("camera", camera)
-        else:
-            self.choose_file()
+    def start_camera(self):
+        camera = self.camera_devices.currentData()
+        if camera is not None:
+            self.launch(camera)
 
-    def choose_file(self):
+    def launch(self, source):
         if self.worker:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Open image or video", "", "Media (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff *.mp4 *.mov *.avi *.mkv *.webm *.m4v);;All files (*)")
-        if path:
-            self.open_path(path)
-
-    def open_path(self, path):
-        mode = "image" if Path(path).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"} else "video"
-        self.tabs.setCurrentIndex(0 if mode == "image" else 1)
-        self.launch(mode, path)
-
-    def launch(self, mode, source):
-        if self.worker:
-            return
-        self.source = (mode, source)
-        self.result_path = None
+        self.source = source
         self.last_frame = None
+        self.save_button.setEnabled(False)
+        self.save_action.setEnabled(False)
         self.preview.clear()
         for label in self.metric_labels.values():
             label.setText("—")
-        self.filename.setText(source.name if mode == "camera" else Path(source).name)
-        self.filename.setToolTip(source.name if mode == "camera" else str(source))
+        self.filename.setText(source.name)
+        self.filename.setToolTip(source.name)
         self.dimensions.clear()
         self.status_label.setText("Starting…")
-        self.worker = self.worker_factory(mode, source, self.settings(), self)
+        self.worker = self.worker_factory("camera", source, self.settings(), self)
         self.worker.status.connect(self.status_label.setText)
         self.worker.device_ready.connect(self.device_label.setText)
         self.worker.failed.connect(self.on_error)
         self.worker.completed.connect(self.on_complete)
         self.worker.finished.connect(self.on_finished)
         self.set_busy(True)
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(mode != "camera")
-        self.pause_button.setVisible(mode == "video")
         self.worker.start()
 
     def set_busy(self, busy):
-        for control in (self.tabs, self.device):
-            control.setEnabled(not busy)
+        self.device.setEnabled(not busy)
         self.update_camera_controls()
         self.stop_button.setEnabled(busy)
-        self.pause_button.setEnabled(busy)
-        self.apply_button.setEnabled(not busy and self.source is not None and self.source[0] == "image")
 
     def refresh_preview(self):
         if not self.worker:
@@ -418,16 +361,14 @@ class MainWindow(QMainWindow):
         self.metric_labels["people"].setText(str(result.people))
         self.metric_labels["tracks"].setText(str(metrics["tracks"]))
         self.metric_labels["fps"].setText(f"{metrics['fps']:.1f}")
-        if metrics["total"]:
-            self.progress.setRange(0, metrics["total"])
-            self.progress.setValue(metrics["frames"])
-        self.save_button.setEnabled(self.source[0] != "video")
+        self.save_button.setEnabled(True)
+        self.save_action.setEnabled(True)
 
     def on_complete(self, payload):
         self.refresh_preview()
-        self.result_path = payload["path"]
-        self.status_label.setText("Stopped" if payload["stopped"] else "Image ready" if self.source[0] == "image" else "Video ready · saved to outputs")
-        self.save_button.setEnabled(self.last_frame is not None and (self.source[0] != "video" or self.result_path is not None))
+        self.status_label.setText("Stopped" if payload["stopped"] else "Camera finished")
+        self.save_button.setEnabled(self.last_frame is not None)
+        self.save_action.setEnabled(self.last_frame is not None)
 
     def on_error(self, message):
         self.status_label.setText(message)
@@ -438,61 +379,30 @@ class MainWindow(QMainWindow):
         worker, self.worker = self.worker, None
         worker.deleteLater()
         self.set_busy(False)
-        self.progress.hide()
-        self.pause_button.hide()
-        self.pause_button.setText("Pause")
         if self.close_requested:
             self.close()
-
-    def apply_image(self):
-        if self.source and self.source[0] == "image":
-            self.launch(*self.source)
-
-    def toggle_pause(self):
-        if self.worker:
-            if self.worker.paused.is_set():
-                self.worker.paused.clear()
-                self.pause_button.setText("Pause")
-                self.status_label.setText("Processing video")
-            else:
-                self.worker.paused.set()
-                self.pause_button.setText("Resume")
-                self.status_label.setText("Paused")
 
     def stop(self):
         if self.worker:
             self.worker.stop()
             self.stop_button.setEnabled(False)
-            self.pause_button.setEnabled(False)
             self.status_label.setText("Stopping…")
 
-    def save_result(self):
-        if self.last_frame is None or (self.source[0] == "video" and not self.result_path):
+    def save_snapshot(self):
+        if self.last_frame is None:
             return
-        video = self.result_path is not None
-        path, _ = QFileDialog.getSaveFileName(self, "Save result", self.result_path.name if video else "person-mask.png", "MP4 video (*.mp4)" if video else "PNG image (*.png);;JPEG image (*.jpg)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save snapshot", "person-mask.png", "PNG image (*.png);;JPEG image (*.jpg)")
         if not path:
             return
         destination = Path(path)
         if not destination.suffix:
-            destination = destination.with_suffix(".mp4" if video else ".png")
+            destination = destination.with_suffix(".png")
         try:
-            if video:
-                if self.result_path.resolve() != destination.resolve():
-                    shutil.copyfile(self.result_path, destination)
-            elif not cv2.imwrite(str(destination), self.last_frame):
+            if not cv2.imwrite(str(destination), self.last_frame):
                 raise RuntimeError("Could not save this image.")
             self.status_label.setText(f"Saved · {destination.name}")
         except (OSError, RuntimeError, cv2.error) as error:
             self.on_error(str(error))
-
-    def dragEnterEvent(self, event):
-        if not self.worker and event.mimeData().hasUrls() and event.mimeData().urls()[0].isLocalFile():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        if not self.worker:
-            self.open_path(event.mimeData().urls()[0].toLocalFile())
 
     def closeEvent(self, event):
         if self.worker or self.camera_discovery:

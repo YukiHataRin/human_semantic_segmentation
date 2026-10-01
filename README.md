@@ -1,15 +1,15 @@
 # Human Mask Studio
 
-A native Python desktop application for person segmentation and multi-person ID tracking. Open an image or video, or use a camera for live YOLO11 masks with persistent BoT-SORT IDs.
+A native Python camera application for live person segmentation and multi-person ID tracking, using YOLO11 masks and persistent BoT-SORT IDs.
 
 ![Human Mask Studio native desktop interface](docs/assets/native-studio.png)
 
 ## Features
 
-- Native PySide6 windows, file dialogs, drag-and-drop, and a Qt Material dark theme.
-- Image segmentation with adjustable confidence, opacity, mask color, and mask-only output.
-- Video segmentation with live preview, progress, pause/resume, and MP4 export.
-- Camera input with live masks, person IDs, and snapshot export.
+- Native PySide6 windows and a Qt Material dark theme.
+- Named camera selection with refresh and stable device identity.
+- Live masks and person IDs, with adjustable confidence, opacity, mask color, and mask-only output.
+- Snapshot export to PNG or JPEG.
 - Automatic device selection: CUDA, Apple MPS, then CPU. The interface reports the selected device.
 - Background inference and a single-frame camera mailbox to keep live previews current.
 
@@ -20,12 +20,6 @@ Create the environment inside the project directory:
 ```bash
 conda create -p ./.conda python=3.12 pip -y
 PYTHONNOUSERSITE=1 conda run -p ./.conda python -m pip install -r requirements.txt
-```
-
-Install FFmpeg for MP4 export. On macOS:
-
-```bash
-brew install ffmpeg
 ```
 
 The first inference run downloads `yolo11n-seg.pt` into the project directory.
@@ -46,23 +40,16 @@ PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio
 
 On this macOS workstation, double-click `launch.command` to launch using the project's `.conda` environment.
 
-Open a file or start a camera directly:
+List connected cameras or start a camera directly:
 
 ```bash
-PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio photo.jpg
 PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio --list-cameras
 PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio --camera
 ```
 
-### Images and videos
-
-Choose **Image** or **Video**, then open media using the button, **File → Open media**, or drag-and-drop. Use **Apply to image** after changing image settings. Video and camera settings update during inference. Videos retain every processed frame at their source frame rate; completed MP4 files are written to `outputs/`. **Save result** exports an image or copies a completed video to a chosen location.
-
 ### Camera
 
-![Named camera selection](docs/assets/native-camera.png)
-
-Choose **Camera**, select a device by name, and click **Start camera**. Click **Refresh cameras** after connecting or disconnecting a camera. Refresh preserves your selection by device ID, even when the device index changes. Enable **Track person IDs** for BoT-SORT tracking. **Stop** releases the camera; **Save result** saves the current segmented frame. The start button is disabled when no cameras are detected.
+Select a device by name and click **Start camera**. Click **Refresh cameras** after connecting or disconnecting a camera. Refresh preserves your selection by device ID, even when the device index changes. Enable **Track person IDs** for BoT-SORT tracking. Settings update during inference. **Stop** releases the camera; **Save snapshot** saves the current segmented frame. The start button is disabled when no cameras are detected.
 
 Use `python -m studio --camera "Camera name"` to start a specific device. `--list-cameras` prints names and device IDs; either can be passed to `--camera`.
 
@@ -70,7 +57,7 @@ On macOS, allow camera access when prompted. When running from Python, camera pe
 
 ## Optional HTTP API
 
-The desktop application runs inference directly. A FastAPI interface is also available for integrations:
+The desktop application runs camera inference directly. An optional FastAPI service provides file-processing endpoints:
 
 ```bash
 PYTHONNOUSERSITE=1 conda run -p ./.conda python -m pip install -r backend/requirements.txt
@@ -81,6 +68,8 @@ PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m uvicorn b
 - `POST /api/segment/video`: video segmentation and optional tracking.
 - `GET /api/device`: active inference device and its display name.
 - `GET /docs`: interactive API documentation.
+
+Video API export requires FFmpeg (`brew install ffmpeg` on macOS).
 
 ## Tests
 
@@ -93,7 +82,7 @@ Tests cover device selection, mask composition, camera discovery and selection, 
 ## Project structure
 
 - `studio/engine.py`: shared YOLO inference, device selection, masks, and video encoding.
-- `studio/workers.py`: background media processing and camera capture.
+- `studio/workers.py`: background inference and camera capture.
 - `studio/cameras.py`: named device discovery and asynchronous refresh.
 - `studio/window.py`: native desktop controls and preview.
 - `studio/__main__.py`: application entry point and Qt Material theme.

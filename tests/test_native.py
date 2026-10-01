@@ -4,6 +4,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import threading
 import time
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,7 +13,7 @@ import numpy as np
 import torch
 from PySide6.QtWidgets import QApplication
 
-from studio.engine import Device, FrameResult, Settings, SegmentationEngine, compose_masks
+from studio.engine import ROOT, Device, FrameResult, Settings, SegmentationEngine, compose_masks
 from studio.window import MainWindow
 from studio.workers import CameraReader, LatestFrame, ProcessingWorker
 from studio.cameras import Camera
@@ -147,8 +149,7 @@ class WindowTests(unittest.TestCase):
         self.app.processEvents()
 
     def start_camera(self):
-        self.window.tabs.setCurrentIndex(2)
-        self.window.open_button.click()
+        self.window.start_button.click()
         self.wait_until(lambda: self.window.last_frame is not None)
 
     def test_camera_stop_releases_device_and_allows_restart(self):
@@ -158,17 +159,17 @@ class WindowTests(unittest.TestCase):
         self.window.stop_button.click()
         self.wait_until(lambda: self.window.worker is None)
         self.assertTrue(self.capture.released.is_set())
-        self.assertTrue(self.window.open_button.isEnabled())
+        self.assertTrue(self.window.start_button.isEnabled())
         self.assertEqual(self.window.status_label.text(), "Stopped")
         self.capture = FakeCapture()
         self.start_camera()
 
     def test_camera_error_restores_controls(self):
         self.capture = FakeCapture(opened=False)
-        self.window.launch("camera", self.cameras[0])
+        self.window.launch(self.cameras[0])
         self.wait_until(lambda: self.window.worker is None)
         self.assertTrue(self.capture.released.is_set())
-        self.assertTrue(self.window.open_button.isEnabled())
+        self.assertTrue(self.window.start_button.isEnabled())
         self.assertIn("Could not open the camera", self.window.status_label.text())
 
     def test_named_camera_selection_reaches_worker(self):
@@ -185,25 +186,21 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.camera_devices.currentData().uid, "usb")
         self.assertEqual(self.window.camera_devices.currentData().index, 0)
 
-    def test_no_cameras_disables_start_but_allows_media(self):
+    def test_no_cameras_disables_start_and_allows_refresh(self):
         self.cameras = []
-        self.window.tabs.setCurrentIndex(2)
         self.window.refresh_cameras()
         self.wait_until(lambda: self.window.camera_discovery is None)
-        self.assertFalse(self.window.open_button.isEnabled())
+        self.assertFalse(self.window.start_button.isEnabled())
         self.assertTrue(self.window.camera_refresh.isEnabled())
         self.assertEqual(self.window.camera_status.text(), "No cameras detected")
-        self.window.tabs.setCurrentIndex(0)
-        self.assertTrue(self.window.open_button.isEnabled())
 
     def test_discovery_failure_clears_stale_devices(self):
         def fail():
             raise RuntimeError("Discovery failed")
         self.window.camera_discover = fail
-        self.window.tabs.setCurrentIndex(2)
         self.window.refresh_cameras()
         self.wait_until(lambda: self.window.camera_discovery is None)
-        self.assertFalse(self.window.open_button.isEnabled())
+        self.assertFalse(self.window.start_button.isEnabled())
         self.assertEqual(self.window.camera_devices.count(), 0)
         self.assertIn("Discovery failed", self.window.camera_status.text())
 
@@ -214,20 +211,19 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.window.worker.settings().confidence, 0.65)
         self.assertFalse(self.window.worker.settings().tracking)
 
-    def test_video_pause_and_stop_discard_partial_export(self):
-        self.window.tabs.setCurrentIndex(1)
-        self.window.launch("video", "test-video.mp4")
-        self.wait_until(lambda: self.window.last_frame is not None)
-        self.window.pause_button.click()
-        self.assertTrue(self.window.worker.paused.is_set())
-        self.assertEqual(self.window.pause_button.text(), "Resume")
-        self.window.pause_button.click()
-        self.assertFalse(self.window.worker.paused.is_set())
+    def test_snapshot_saves_current_camera_frame_as_png(self):
+        self.assertFalse(self.window.save_button.isEnabled())
+        self.start_camera()
         self.window.stop_button.click()
         self.wait_until(lambda: self.window.worker is None)
-        self.assertIsNone(self.window.result_path)
-        self.assertTrue(self.capture.released.is_set())
-        self.assertFalse(self.window.save_button.isEnabled())
+        with TemporaryDirectory(dir=ROOT / ".runtime") as directory:
+            destination = Path(directory) / "camera snapshot"
+            with patch("studio.window.QFileDialog.getSaveFileName", return_value=(str(destination), "PNG image (*.png)")):
+                self.window.save_snapshot()
+            import cv2
+            saved = cv2.imread(str(destination.with_suffix(".png")))
+            np.testing.assert_array_equal(saved, self.window.last_frame)
+            self.assertEqual(self.window.status_label.text(), "Saved · camera snapshot.png")
 
     def test_closing_window_waits_for_camera_release(self):
         self.start_camera()
