@@ -6,3 +6,11 @@ demo/
 yolo11n-seg.pt
 __pycache__/
 .venv/
+.conda/
+venv/
+outputs/
+.runtime/
+build/
+*.app/
+.checkouts/
+.DS_Store
