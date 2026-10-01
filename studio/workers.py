@@ -10,6 +10,7 @@ import cv2
 from PySide6.QtCore import QThread, Signal
 
 from .engine import ROOT, SegmentationEngine, Settings, encode_video
+from .cameras import Camera
 
 
 class LatestFrame:
@@ -38,7 +39,9 @@ class LatestFrame:
 
 
 def open_capture(source, camera=False):
-    if camera and sys.platform == "darwin":
+    if isinstance(source, Camera):
+        capture = cv2.VideoCapture(source.index, source.backend)
+    elif camera and sys.platform == "darwin":
         capture = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
     else:
         capture = cv2.VideoCapture(source)
@@ -50,21 +53,28 @@ def open_capture(source, camera=False):
 
 
 class CameraReader(threading.Thread):
-    def __init__(self, capture):
+    def __init__(self, capture, startup_timeout=5):
         super().__init__(daemon=True, name="camera-capture")
         self.capture = capture
         self.frames = LatestFrame()
         self.stop_event = threading.Event()
         self.error = None
+        self.startup_timeout = startup_timeout
 
     def run(self):
+        deadline = time.monotonic() + self.startup_timeout
+        received = False
         try:
             while not self.stop_event.is_set():
                 ok, frame = self.capture.read()
                 if not ok:
+                    if not received and time.monotonic() < deadline:
+                        self.stop_event.wait(0.05)
+                        continue
                     if not self.stop_event.is_set():
                         self.error = "The camera stopped delivering frames. Check its connection and camera permission."
                     break
+                received = True
                 self.frames.put(frame)
         except Exception as error:
             self.error = str(error)
@@ -140,7 +150,7 @@ class ProcessingWorker(QThread):
             self.status.emit("Opening camera…" if self.mode == "camera" else "Opening video…")
             capture = self.capture_factory(self.source, camera=self.mode == "camera")
             if not capture.isOpened():
-                raise RuntimeError("Could not open the camera. Check its index, connection, and camera permission." if self.mode == "camera" else "Could not read this video. Choose a supported video file.")
+                raise RuntimeError("Could not open the camera. Check its connection and camera permission, then refresh cameras." if self.mode == "camera" else "Could not read this video. Choose a supported video file.")
             fps = capture.get(cv2.CAP_PROP_FPS)
             fps = fps if 0 < fps <= 240 else 30
             total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) if self.mode == "video" else 0
@@ -152,7 +162,7 @@ class ProcessingWorker(QThread):
             if self.mode == "camera":
                 reader = CameraReader(capture)
                 reader.start()
-            self.status.emit("Camera live" if self.mode == "camera" else "Processing video")
+            self.status.emit("Waiting for camera frames…" if self.mode == "camera" else "Processing video")
             while not self.stop_event.is_set():
                 if self.paused.is_set():
                     self.stop_event.wait(0.05)
@@ -174,6 +184,8 @@ class ProcessingWorker(QThread):
                     tracks.clear()
                     tracking = settings.tracking
                 result = engine.process(frame, settings, tracking=tracking)
+                if self.mode == "camera" and processed == 0:
+                    self.status.emit("Camera live")
                 tracks.update(result.track_ids)
                 processed += 1
                 if self.mode == "video":

@@ -4,16 +4,17 @@ import shutil
 from pathlib import Path
 
 import cv2
-from PySide6.QtCore import Qt, QTimer, QSize, QRect
+from PySide6.QtCore import Qt, QTimer, QSize, QRect, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QImage, QPainter
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QMainWindow, QProgressBar, QPushButton,
-    QScrollArea, QSlider, QSpinBox, QStyle, QTabBar, QVBoxLayout, QWidget,
+    QScrollArea, QSlider, QStyle, QTabBar, QVBoxLayout, QWidget,
 )
 
 from .engine import Settings, available_devices
 from .workers import ProcessingWorker
+from .cameras import CameraDiscovery, discover_cameras
 
 
 class Preview(QWidget):
@@ -53,10 +54,14 @@ class Preview(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, worker_factory=ProcessingWorker):
+    cameras_loaded = Signal()
+
+    def __init__(self, worker_factory=ProcessingWorker, camera_discover=discover_cameras):
         super().__init__()
         self.worker_factory = worker_factory
         self.worker = None
+        self.camera_discover = camera_discover
+        self.camera_discovery = None
         self.last_frame = None
         self.source = None
         self.result_path = None
@@ -91,7 +96,6 @@ class MainWindow(QMainWindow):
         self.tabs.setExpanding(False)
         for label in ("Image", "Video", "Camera"):
             self.tabs.addTab(label)
-        self.tabs.currentChanged.connect(self.mode_changed)
         header.addWidget(self.tabs)
         layout.addLayout(header)
 
@@ -130,13 +134,20 @@ class MainWindow(QMainWindow):
         controls.addWidget(self.open_button)
 
         self.camera_controls = QWidget()
-        camera_layout = QHBoxLayout(self.camera_controls)
+        camera_layout = QVBoxLayout(self.camera_controls)
         camera_layout.setContentsMargins(0, 0, 0, 0)
-        camera_layout.addWidget(QLabel("Camera index"))
-        self.camera_index = QSpinBox()
-        self.camera_index.setRange(0, 9)
-        self.camera_index.setAccessibleName("Camera index")
-        camera_layout.addWidget(self.camera_index)
+        camera_layout.addWidget(QLabel("Camera"))
+        self.camera_devices = QComboBox()
+        self.camera_devices.setAccessibleName("Camera device")
+        self.camera_devices.setMinimumContentsLength(12)
+        self.camera_devices.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        camera_layout.addWidget(self.camera_devices)
+        self.camera_refresh = QPushButton("Refresh cameras")
+        self.camera_refresh.clicked.connect(self.refresh_cameras)
+        camera_layout.addWidget(self.camera_refresh)
+        self.camera_status = QLabel("Finding cameras…")
+        self.camera_status.setWordWrap(True)
+        camera_layout.addWidget(self.camera_status)
         controls.addWidget(self.camera_controls)
         self.camera_controls.hide()
 
@@ -236,6 +247,61 @@ class MainWindow(QMainWindow):
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.refresh_preview)
         self.timer.start()
+        self.tabs.currentChanged.connect(self.mode_changed)
+        QTimer.singleShot(0, self.refresh_cameras)
+
+    def refresh_cameras(self):
+        if self.camera_discovery or self.worker:
+            return
+        self.camera_status.setText("Finding cameras…")
+        self.camera_discovery = CameraDiscovery(self, self.camera_discover)
+        self.camera_discovery.ready.connect(self.on_cameras)
+        self.camera_discovery.failed.connect(self.on_camera_discovery_error)
+        self.camera_discovery.finished.connect(self.on_camera_discovery_finished)
+        self.update_camera_controls()
+        self.camera_discovery.start()
+
+    def on_cameras(self, cameras):
+        selected = self.camera_devices.currentData()
+        self.camera_devices.clear()
+        for camera in cameras:
+            self.camera_devices.addItem(camera.name, camera)
+            self.camera_devices.setItemData(self.camera_devices.count() - 1, camera.name, Qt.ItemDataRole.ToolTipRole)
+        if selected:
+            for index, camera in enumerate(cameras):
+                if camera.uid == selected.uid:
+                    self.camera_devices.setCurrentIndex(index)
+                    break
+        self.camera_status.setText(f"{len(cameras)} camera{'s' if len(cameras) != 1 else ''} detected" if cameras else "No cameras detected")
+        self.cameras_loaded.emit()
+
+    def on_camera_discovery_error(self, message):
+        self.camera_devices.clear()
+        self.camera_status.setText(message)
+
+    def on_camera_discovery_finished(self):
+        discovery, self.camera_discovery = self.camera_discovery, None
+        discovery.deleteLater()
+        self.update_camera_controls()
+        if self.close_requested:
+            self.close()
+
+    def update_camera_controls(self):
+        idle = self.worker is None
+        ready = idle and self.camera_discovery is None
+        self.camera_devices.setEnabled(ready and self.camera_devices.count() > 0)
+        self.camera_refresh.setEnabled(ready)
+        self.open_button.setEnabled(idle and (self.tabs.currentIndex() != 2 or (ready and self.camera_devices.count() > 0)))
+
+    def start_named_camera(self, name=""):
+        self.tabs.setCurrentIndex(2)
+        for index in range(self.camera_devices.count()):
+            camera = self.camera_devices.itemData(index)
+            if not name or name in (camera.name, camera.uid):
+                self.camera_devices.setCurrentIndex(index)
+                self.launch("camera", camera)
+                return
+        self.on_error(f"Camera not found: {name}" if name else "No cameras detected")
 
     def add_control(self, layout, text, widget):
         label = QLabel(text)
@@ -275,6 +341,7 @@ class MainWindow(QMainWindow):
         self.camera_controls.setVisible(index == 2)
         self.tracking.setVisible(index != 0)
         self.apply_button.setVisible(index == 0)
+        self.update_camera_controls()
 
     def pick_color(self):
         color = QColorDialog.getColor(QColor(self.color), self, "Mask color")
@@ -285,7 +352,9 @@ class MainWindow(QMainWindow):
 
     def choose_source(self):
         if self.tabs.currentIndex() == 2:
-            self.launch("camera", self.camera_index.value())
+            camera = self.camera_devices.currentData()
+            if camera is not None:
+                self.launch("camera", camera)
         else:
             self.choose_file()
 
@@ -310,8 +379,8 @@ class MainWindow(QMainWindow):
         self.preview.clear()
         for label in self.metric_labels.values():
             label.setText("—")
-        self.filename.setText(f"Camera {source}" if mode == "camera" else Path(source).name)
-        self.filename.setToolTip(str(source))
+        self.filename.setText(source.name if mode == "camera" else Path(source).name)
+        self.filename.setToolTip(source.name if mode == "camera" else str(source))
         self.dimensions.clear()
         self.status_label.setText("Starting…")
         self.worker = self.worker_factory(mode, source, self.settings(), self)
@@ -327,8 +396,9 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def set_busy(self, busy):
-        for control in (self.tabs, self.open_button, self.device, self.camera_index):
+        for control in (self.tabs, self.device):
             control.setEnabled(not busy)
+        self.update_camera_controls()
         self.stop_button.setEnabled(busy)
         self.pause_button.setEnabled(busy)
         self.apply_button.setEnabled(not busy and self.source is not None and self.source[0] == "image")
@@ -425,7 +495,7 @@ class MainWindow(QMainWindow):
             self.open_path(event.mimeData().urls()[0].toLocalFile())
 
     def closeEvent(self, event):
-        if self.worker:
+        if self.worker or self.camera_discovery:
             self.close_requested = True
             self.stop()
             event.ignore()

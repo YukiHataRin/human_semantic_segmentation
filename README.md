@@ -30,6 +30,14 @@ brew install ffmpeg
 
 The first inference run downloads `yolo11n-seg.pt` into the project directory.
 
+For NVIDIA RTX 50-series GPUs, install a CUDA-enabled PyTorch build with CUDA 12.8 or newer inside the project environment. For example:
+
+```bash
+PYTHONNOUSERSITE=1 conda run -p ./.conda python -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu128
+```
+
+The application reads GPU names from PyTorch and lists each CUDA device separately. See the [PyTorch installation guide](https://pytorch.org/get-started/locally/) for platform-specific builds.
+
 ## Run
 
 ```bash
@@ -42,7 +50,8 @@ Open a file or start a camera directly:
 
 ```bash
 PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio photo.jpg
-PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio --camera 0
+PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio --list-cameras
+PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m studio --camera
 ```
 
 ### Images and videos
@@ -51,7 +60,11 @@ Choose **Image** or **Video**, then open media using the button, **File → Open
 
 ### Camera
 
-Choose **Camera**, select a camera index, and click **Start camera**. Index `0` is the default camera. Choose another index for an additional USB camera. Enable **Track person IDs** for BoT-SORT tracking. **Stop** releases the camera; **Save result** saves the current segmented frame.
+![Named camera selection](docs/assets/native-camera.png)
+
+Choose **Camera**, select a device by name, and click **Start camera**. Click **Refresh cameras** after connecting or disconnecting a camera. Refresh preserves your selection by device ID, even when the device index changes. Enable **Track person IDs** for BoT-SORT tracking. **Stop** releases the camera; **Save result** saves the current segmented frame. The start button is disabled when no cameras are detected.
+
+Use `python -m studio --camera "Camera name"` to start a specific device. `--list-cameras` prints names and device IDs; either can be passed to `--camera`.
 
 On macOS, allow camera access when prompted. When running from Python, camera permission belongs to the launching application. Manage it in **System Settings → Privacy & Security → Camera**.
 
@@ -75,12 +88,13 @@ PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m uvicorn b
 PYTHONNOUSERSITE=1 conda run --no-capture-output -p ./.conda python -m unittest discover -s tests -v
 ```
 
-Tests cover device selection, mask composition, camera frame buffering, disconnect cleanup, stop/restart, live settings, and window shutdown.
+Tests cover device selection, mask composition, camera discovery and selection, refresh after index changes, startup buffering, disconnect cleanup, stop/restart, live settings, and window shutdown.
 
 ## Project structure
 
 - `studio/engine.py`: shared YOLO inference, device selection, masks, and video encoding.
 - `studio/workers.py`: background media processing and camera capture.
+- `studio/cameras.py`: named device discovery and asynchronous refresh.
 - `studio/window.py`: native desktop controls and preview.
 - `studio/__main__.py`: application entry point and Qt Material theme.
 - `backend/`: optional HTTP API and BoT-SORT configuration.
@@ -93,6 +107,7 @@ Tests cover device selection, mask composition, camera frame buffering, disconne
 - [BoT-SORT](https://github.com/NirAharon/BoT-SORT): tracking and ReID, implemented through Ultralytics.
 - [PyTorch](https://github.com/pytorch/pytorch): CPU, CUDA, and Apple MPS inference.
 - [OpenCV](https://github.com/opencv/opencv): image/video decoding and camera capture.
+- [cv2-enumerate-cameras](https://github.com/lukehugh/cv2_enumerate_cameras): camera names, device IDs, and capture backends.
 - [FFmpeg](https://github.com/FFmpeg/FFmpeg): H.264 MP4 encoding.
 - [FastAPI](https://github.com/fastapi/fastapi): optional HTTP integration.
 

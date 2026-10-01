@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication
 from studio.engine import Device, FrameResult, Settings, SegmentationEngine, compose_masks
 from studio.window import MainWindow
 from studio.workers import CameraReader, LatestFrame, ProcessingWorker
+from studio.cameras import Camera
 
 
 class FakeCapture:
@@ -82,6 +83,23 @@ class EngineTests(unittest.TestCase):
 
 
 class CaptureTests(unittest.TestCase):
+    def test_camera_waits_for_first_frame_during_startup(self):
+        capture = FakeCapture()
+        reads = 0
+        original_read = capture.read
+        def delayed_read():
+            nonlocal reads
+            reads += 1
+            return (False, None) if reads < 3 else original_read()
+        capture.read = delayed_read
+        reader = CameraReader(capture, startup_timeout=1)
+        reader.start()
+        self.assertIsNotNone(reader.frames.take(timeout=1))
+        reader.stop()
+        reader.join(1)
+        self.assertIsNone(reader.error)
+        self.assertTrue(capture.released.is_set())
+
     def test_mailbox_drops_stale_frames(self):
         mailbox = LatestFrame()
         mailbox.put("old")
@@ -93,7 +111,7 @@ class CaptureTests(unittest.TestCase):
 
     def test_disconnect_releases_camera(self):
         capture = FakeCapture(disconnect=True)
-        reader = CameraReader(capture)
+        reader = CameraReader(capture, startup_timeout=0.02)
         reader.start()
         reader.join(1)
         self.assertFalse(reader.is_alive())
@@ -109,8 +127,10 @@ class WindowTests(unittest.TestCase):
 
     def setUp(self):
         self.capture = FakeCapture()
-        self.window = MainWindow(worker_factory=lambda mode, source, settings, parent: ProcessingWorker(mode, source, settings, parent, FakeEngine, lambda *args, **kwargs: self.capture))
+        self.cameras = [Camera("Built-in camera", 0, 1200, "built-in"), Camera("USB camera", 1, 1200, "usb")]
+        self.window = MainWindow(worker_factory=lambda mode, source, settings, parent: ProcessingWorker(mode, source, settings, parent, FakeEngine, lambda *args, **kwargs: self.capture), camera_discover=lambda: self.cameras)
         self.window.show()
+        self.wait_until(lambda: self.window.camera_devices.count() == 2 and self.window.camera_discovery is None)
 
     def wait_until(self, predicate, timeout=3000):
         deadline = time.monotonic() + timeout / 1000
@@ -145,11 +165,47 @@ class WindowTests(unittest.TestCase):
 
     def test_camera_error_restores_controls(self):
         self.capture = FakeCapture(opened=False)
-        self.window.launch("camera", 0)
+        self.window.launch("camera", self.cameras[0])
         self.wait_until(lambda: self.window.worker is None)
         self.assertTrue(self.capture.released.is_set())
         self.assertTrue(self.window.open_button.isEnabled())
         self.assertIn("Could not open the camera", self.window.status_label.text())
+
+    def test_named_camera_selection_reaches_worker(self):
+        self.window.start_named_camera("USB camera")
+        self.wait_until(lambda: self.window.last_frame is not None)
+        self.assertEqual(self.window.worker.source, self.cameras[1])
+        self.assertEqual(self.window.filename.text(), "USB camera")
+
+    def test_refresh_preserves_device_identity_when_index_changes(self):
+        self.window.camera_devices.setCurrentIndex(1)
+        self.cameras = [Camera("USB camera", 0, 1200, "usb")]
+        self.window.refresh_cameras()
+        self.wait_until(lambda: self.window.camera_discovery is None)
+        self.assertEqual(self.window.camera_devices.currentData().uid, "usb")
+        self.assertEqual(self.window.camera_devices.currentData().index, 0)
+
+    def test_no_cameras_disables_start_but_allows_media(self):
+        self.cameras = []
+        self.window.tabs.setCurrentIndex(2)
+        self.window.refresh_cameras()
+        self.wait_until(lambda: self.window.camera_discovery is None)
+        self.assertFalse(self.window.open_button.isEnabled())
+        self.assertTrue(self.window.camera_refresh.isEnabled())
+        self.assertEqual(self.window.camera_status.text(), "No cameras detected")
+        self.window.tabs.setCurrentIndex(0)
+        self.assertTrue(self.window.open_button.isEnabled())
+
+    def test_discovery_failure_clears_stale_devices(self):
+        def fail():
+            raise RuntimeError("Discovery failed")
+        self.window.camera_discover = fail
+        self.window.tabs.setCurrentIndex(2)
+        self.window.refresh_cameras()
+        self.wait_until(lambda: self.window.camera_discovery is None)
+        self.assertFalse(self.window.open_button.isEnabled())
+        self.assertEqual(self.window.camera_devices.count(), 0)
+        self.assertIn("Discovery failed", self.window.camera_status.text())
 
     def test_live_settings_are_sent_to_worker(self):
         self.start_camera()

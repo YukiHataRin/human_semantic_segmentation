@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication
 from qt_material import apply_stylesheet
 
 from .window import MainWindow
+from .cameras import discover_cameras
 
 
 def create_application():
@@ -52,15 +53,22 @@ def create_application():
 def main():
     parser = argparse.ArgumentParser(description="Human Mask Studio native desktop application")
     parser.add_argument("media", nargs="?", help="Image or video to open")
-    parser.add_argument("--camera", type=int, help="Start the selected camera index")
+    parser.add_argument("--camera", nargs="?", const="", help="Start a camera by its name or device ID; omit the name for the first camera")
+    parser.add_argument("--list-cameras", action="store_true", help="List connected camera names and device IDs")
     args = parser.parse_args()
+    if args.list_cameras:
+        for camera in discover_cameras():
+            print(f"{camera.name}\t{camera.uid}")
+        return
     app = create_application()
     window = MainWindow()
     window.show()
     if args.camera is not None:
         window.tabs.setCurrentIndex(2)
-        window.camera_index.setValue(args.camera)
-        QTimer.singleShot(0, lambda: window.launch("camera", args.camera))
+        def start_requested_camera():
+            window.cameras_loaded.disconnect(start_requested_camera)
+            window.start_named_camera(args.camera)
+        window.cameras_loaded.connect(start_requested_camera)
     elif args.media:
         QTimer.singleShot(0, lambda: window.open_path(args.media))
     sys.exit(app.exec())
