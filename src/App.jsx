@@ -25,6 +25,7 @@ function App() {
   const [confidence, setConfidence] = useState(0.4)
   const [opacity, setOpacity] = useState(0.55)
   const [color, setColor] = useState('#20d7f5')
+  const [enableTracking, setEnableTracking] = useState(true)
   const [status, setStatus] = useState('Ready for media')
   const [metrics, setMetrics] = useState(null)
   const [isProcessing, setIsProcessing] = useState(false)
@@ -61,6 +62,7 @@ function App() {
     form.append('confidence', confidence.toString())
     form.append('overlay_opacity', opacity.toString())
     form.append('overlay_color', color)
+    if (nextMode === 'video') form.append('enable_tracking', enableTracking.toString())
     try {
       const endpoint = nextMode === 'image' ? '/api/segment/image' : '/api/segment/video'
       const response = await fetch(`${API_BASE}${endpoint}`, { method: 'POST', body: form })
@@ -101,7 +103,7 @@ function App() {
             {!activeUrl && <div className="empty-preview"><div className="empty-icon"><UploadIcon /></div><h1>Drop an image or video here</h1><p>YOLO will find every person and draw a mask over each one.</p><button className="link-button" onClick={openPicker}>Choose media</button></div>}
             {activeUrl && mode === 'image' && <img src={activeUrl} alt={resultUrl ? 'Person segmentation result' : 'Selected image'} />}
             {activeUrl && mode === 'video' && <video ref={videoRef} src={activeUrl} onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)} onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime)} onPlay={() => setIsPlaying(true)} onPause={() => setIsPlaying(false)} />}
-            {isProcessing && <div className="processing"><div className="spinner" />Running YOLO segmentation…</div>}
+            {isProcessing && <div className="processing"><div className="spinner" />{mode === 'video' && enableTracking ? 'Segmenting and tracking IDs…' : 'Running YOLO segmentation…'}</div>}
             {resultUrl && <div className="mask-indicator"><span /> Mask overlay</div>}
           </div>
           {mode === 'video' && <div className="transport"><button onClick={toggleVideo} aria-label={isPlaying ? 'Pause video' : 'Play video'}><PlayIcon pause={isPlaying} /></button><input aria-label="Video position" type="range" min="0" max={videoDuration || 1} step="0.01" value={videoTime} onChange={(e) => { if (videoRef.current) videoRef.current.currentTime = Number(e.target.value) }} /><span>{formattedTime(videoTime)} / {formattedTime(videoDuration)}</span></div>}
@@ -112,12 +114,14 @@ function App() {
           <input ref={fileRef} className="visually-hidden" type="file" accept="image/*,video/*" onChange={onPickFile} />
           <button className="upload-button" onClick={openPicker}><UploadIcon /> Upload media</button>
           <div className="control-group"><label htmlFor="model">Model</label><select id="model" defaultValue="yolo11n-seg"><option value="yolo11n-seg">YOLO11n Segment</option></select><p>Fast person instance masks</p></div>
+          {mode === 'video' ? <div className="control-group tracking-control"><label className="toggle-row" htmlFor="tracking"><span><strong>Identity tracking</strong><small>BoT-SORT · ReID embeddings</small></span><input id="tracking" type="checkbox" checked={enableTracking} onChange={(event) => setEnableTracking(event.target.checked)} /></label></div> : null}
           <div className="control-group"><label htmlFor="confidence">Confidence <output>{confidence.toFixed(2)}</output></label><input id="confidence" type="range" min="0.1" max="0.9" step="0.05" value={confidence} onChange={(e) => setConfidence(Number(e.target.value))} /></div>
           <div className="control-group"><label htmlFor="opacity">Overlay opacity <output>{opacity.toFixed(2)}</output></label><input id="opacity" type="range" min="0.1" max="0.9" step="0.05" value={opacity} onChange={(e) => setOpacity(Number(e.target.value))} /></div>
-          <div className="control-group"><label htmlFor="color">Mask color</label><div className="color-field"><input id="color" type="color" value={color} onChange={(e) => setColor(e.target.value)} /><code>{color.toUpperCase()}</code></div></div>
+          {mode === 'image' || !enableTracking ? <div className="control-group"><label htmlFor="color">Mask color</label><div className="color-field"><input id="color" type="color" value={color} onChange={(e) => setColor(e.target.value)} /><code>{color.toUpperCase()}</code></div></div> : null}
           <div className="metrics">
             <div><span>Inference</span><strong>{metrics ? `${metrics.inference_ms.toFixed(1)} ms` : '—'}</strong></div>
             <div><span>People</span><strong>{metrics ? metrics.people : '—'}</strong></div>
+            {mode === 'video' && enableTracking ? <div><span>Track IDs</span><strong>{metrics ? metrics.unique_tracks : '—'}</strong></div> : null}
             <div><span>FPS</span><strong>{metrics?.fps ? metrics.fps.toFixed(1) : '—'}</strong></div>
           </div>
         </aside>
